@@ -1,0 +1,21 @@
+import test from "node:test";import assert from "node:assert/strict";import {loadEngine,synthetic,agg,sampleRanges} from "../ai-eval/lib.mjs";
+const AIR=loadEngine();
+// 5-minute candles on a weekday morning, New York time (UTC-4 in October)
+const T0=Date.UTC(2026,9,14,13,30)/1000;const mk=a=>a.map(([o,h,l,c],i)=>({t:T0+i*300,o,h,l,c}));
+test("finds a bullish fair value gap",()=>{const b=mk([[100,101,99,100.5],[100.5,104,100.4,103.8],[103.8,105,102,104.5],[104.5,105.2,103.9,105]]);
+  const F=AIR.facts(b,0,3,{sym:"X",tf:"5m",tfSec:300,dec:2});assert.equal(F.fvgs.length,1);assert.equal(F.fvgs[0].dir,"bull");assert.equal(F.fvgs[0].bottom,101);assert.equal(F.fvgs[0].top,102)});
+test("high, low and change are exact",()=>{const b=mk([[100,101,99,100.5],[100.5,104,100.4,103.8],[103.8,105,102,104.5]]);const F=AIR.facts(b,0,2,{sym:"X",tf:"5m",tfSec:300,dec:2});
+  assert.equal(F.high.p,105);assert.equal(F.low.p,99);assert.equal(F.change,4.5);assert.equal(F.from,"09:30")});
+test("never uses candles after the range",()=>{const b=mk([[100,101,99,100.5],[100.5,104,100.4,103.8],[103.8,105,102,104.5],[104.5,150,103.9,149]]);
+  const F=AIR.facts(b.slice(0,3),0,2,{sym:"X",tf:"5m",tfSec:300,dec:2});assert.equal(F.high.p,105);assert.ok(!AIR.forPrompt(F).includes("150"))});
+test("fact check flags a wrong price, a wrong time and a made-up pattern",()=>{const bars=agg(synthetic(3,12),300),[r]=sampleRanges(AIR,bars,1);
+  const F=AIR.facts(bars.slice(0,r.i2+1),r.i1,r.i2,{sym:"X",tf:"5m",tfSec:300,dec:2});
+  const ok=AIR.check("High "+F.high.p+" at "+F.high.t+", low "+F.low.p+".",F,2);assert.equal(ok.good,ok.total);assert.equal(ok.score,100);
+  const bad=AIR.check("High "+(F.high.p+25).toFixed(2)+" at 13:47. There was SMT divergence.",F,2);
+  assert.equal(bad.marks.filter(m=>!m.ok).length,2);if(!F.smt.length)assert.equal(bad.claims.length,1)});
+test("prompt tells the model to use only the facts",()=>{const b=mk([[100,101,99,100.5],[100.5,104,100.4,103.8],[103.8,105,102,104.5]]);const F=AIR.facts(b,0,2,{sym:"X",tf:"5m",tfSec:300,dec:2});
+  const p=AIR.prompt("explain",F);assert.match(p.system,/Use only the FACTS/);assert.match(p.user,/"high":\{"p":105/)});
+test("grades a short trade against the playbook",()=>{const bars=agg(synthetic(5,15),300),[r]=sampleRanges(AIR,bars,1);const b=bars.slice(0,r.i2+1);
+  const tr={side:-1,entry:b[r.i1+5].c,entryT:b[r.i1+5].t,sl:b[r.i1+5].c+20,tp:b[r.i1+5].c-60};
+  const F=AIR.facts(b,r.i1,r.i2,{sym:"X",tf:"5m",tfSec:300,dec:2,trades:[tr]});const g=AIR.grade(F,F.trades[0],{hasOther:false});
+  assert.ok(g.checks.length>=5);assert.equal(g.checks.find(c=>/SMT/.test(c.rule)).res,"n/a");assert.ok(g.grade>=0&&g.grade<=100)});
